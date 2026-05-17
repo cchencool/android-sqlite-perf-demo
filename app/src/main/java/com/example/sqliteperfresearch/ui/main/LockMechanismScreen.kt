@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.tooling.preview.Preview
 import com.example.sqliteperfresearch.database.LockExperiment
 import com.example.sqliteperfresearch.database.PerfDatabase
 import com.example.sqliteperfresearch.model.ExperimentLog
@@ -148,5 +149,14 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(logs.toList()) { log -> LogItem(log) }
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun LockMechanismScreenPreview() {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text("LockMechanismScreen", style = MaterialTheme.typography.headlineMedium)
+        Text("Preview", style = MaterialTheme.typography.bodyMedium)
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.tooling.preview.Preview
 import com.example.sqliteperfresearch.database.DataGenerator
 import com.example.sqliteperfresearch.database.PerfDatabase
 import com.example.sqliteperfresearch.database.Schema
@@ -139,5 +140,14 @@ fun DataFillScreen(modifier: Modifier = Modifier) {
                 LogItem(log)
             }
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun DataFillScreenPreview() {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text("DataFillScreen", style = MaterialTheme.typography.headlineMedium)
+        Text("Preview", style = MaterialTheme.typography.bodyMedium)
     }
 }

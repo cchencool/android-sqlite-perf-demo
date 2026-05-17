@@ -26,7 +26,6 @@ class WalExperiment(private val context: android.content.Context) {
     private fun dbPath(name: String) = context.getDatabasePath(name).absolutePath
 
     suspend fun prepareDatabases(callback: Callback): Pair<PerfDatabase, PerfDatabase> {
-        // Delete any existing DB files to ensure clean state
         context.deleteDatabase("test_wal.db")
         context.deleteDatabase("test_delete.db")
 
@@ -41,29 +40,56 @@ class WalExperiment(private val context: android.content.Context) {
         return walDb to deleteDb
     }
 
-    suspend fun fillData(walDb: PerfDatabase, deleteDb: PerfDatabase, count: Int, callback: Callback) {
-        callback.onLog(ExperimentLog(now(), "WAL对比", "开始填充数据: 每个 DB 填充 $count 行", LogType.INFO))
+    suspend fun openExistingDatabases(callback: Callback): Pair<PerfDatabase, PerfDatabase>? {
+        val walPath = context.getDatabasePath("test_wal.db")
+        val deletePath = context.getDatabasePath("test_delete.db")
+        if (!walPath.exists() || !deletePath.exists()) {
+            callback.onLog(ExperimentLog(now(), "WAL对比", "未找到现有测试数据库, 请先「新建两个 DB」", LogType.WARNING))
+            return null
+        }
+        val walDb = PerfDatabase(context, "test_wal.db")
+        val deleteDb = PerfDatabase(context, "test_delete.db")
+        val walMode = walDb.getJournalMode()
+        val deleteMode = deleteDb.getJournalMode()
+        val walCount = walDb.getRowCount()
+        val deleteCount = deleteDb.getRowCount()
+        callback.onLog(ExperimentLog(now(), "WAL对比", "已打开现有 WAL DB ($walMode): $walCount 行", LogType.SUCCESS))
+        callback.onLog(ExperimentLog(now(), "WAL对比", "已打开现有 TRUNCATE DB ($deleteMode): $deleteCount 行", LogType.SUCCESS))
+        return walDb to deleteDb
+    }
+
+    suspend fun fillData(walDb: PerfDatabase, deleteDb: PerfDatabase, count: Int, callback: Callback) = supervisorScope {
+        callback.onLog(ExperimentLog(now(), "WAL对比", "开始并发填充数据: 每个 DB 填充 $count 行", LogType.INFO))
         val gen = DataGenerator()
 
-        // Fill WAL DB
-        callback.onLog(ExperimentLog(now(), "WAL对比", "填充 WAL DB...", LogType.INFO))
-        var walCount = 0
-        gen.generate(walDb.writableDatabase, count) { inserted -> walCount = inserted }
-        callback.onLog(ExperimentLog(now(), "WAL对比", "WAL DB 填充完成: ${walDb.getRowCount()} 行", LogType.SUCCESS))
+        val walJob = async(Dispatchers.IO) {
+            callback.onLog(ExperimentLog(now(), "WAL对比", "WAL DB 开始填充...", LogType.INFO))
+            val startMs = System.currentTimeMillis()
+            gen.generate(walDb.writableDatabase, count) { }
+            val elapsed = System.currentTimeMillis() - startMs
+            callback.onLog(ExperimentLog(now(), "WAL对比", "WAL DB 填充完成: ${walDb.getRowCount()} 行, 耗时 ${elapsed}ms", LogType.SUCCESS))
+            walDb.getRowCount()
+        }
 
-        // Fill TRUNCATE DB
-        callback.onLog(ExperimentLog(now(), "WAL对比", "填充 TRUNCATE DB...", LogType.INFO))
-        gen.generate(deleteDb.writableDatabase, count) { }
-        callback.onLog(ExperimentLog(now(), "WAL对比", "TRUNCATE DB 填充完成: ${deleteDb.getRowCount()} 行", LogType.SUCCESS))
+        val deleteJob = async(Dispatchers.IO) {
+            callback.onLog(ExperimentLog(now(), "WAL对比", "TRUNCATE DB 开始填充...", LogType.INFO))
+            val startMs = System.currentTimeMillis()
+            gen.generate(deleteDb.writableDatabase, count) { }
+            val elapsed = System.currentTimeMillis() - startMs
+            callback.onLog(ExperimentLog(now(), "WAL对比", "TRUNCATE DB 填充完成: ${deleteDb.getRowCount()} 行, 耗时 ${elapsed}ms", LogType.SUCCESS))
+            deleteDb.getRowCount()
+        }
+
+        val walCount = walJob.await()
+        val deleteCount = deleteJob.await()
+        callback.onLog(ExperimentLog(now(), "WAL对比", "两个 DB 填充完成: WAL=$walCount 行, TRUNCATE=$deleteCount 行", LogType.SUCCESS))
     }
 
     suspend fun runConcurrentReads(walDb: PerfDatabase, deleteDb: PerfDatabase, threadCount: Int, rowsPerThread: Int, callback: Callback) {
         callback.onLog(ExperimentLog(now(), "并发读", "启动 $threadCount 线程并发读, 每线程 $rowsPerThread 行", LogType.INFO))
         runTimedComparison("并发读", walDb, deleteDb, callback) { db, tid ->
             measureTimeMillis {
-                // Use readableDatabase directly - SQLiteOpenHelper manages the connection pool
-                val reader = db.readableDatabase
-                reader.rawQuery(
+                db.readableDatabase.rawQuery(
                     "SELECT * FROM ${Schema.TABLE_NAME} LIMIT $rowsPerThread OFFSET ${tid * rowsPerThread}",
                     null
                 ).use {
@@ -123,6 +149,82 @@ class WalExperiment(private val context: android.content.Context) {
             }
         }
     }
+
+    /**
+     * 三种事务模式 × 两种日志模式 完整对比
+     * 对于每种事务模式，分别在 WAL 和 TRUNCATE 上跑并发读，输出对比表格
+     */
+    suspend fun runFullTxModeComparison(
+        walDb: PerfDatabase,
+        deleteDb: PerfDatabase,
+        threadCount: Int,
+        rowsPerThread: Int,
+        callback: Callback,
+    ) {
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== WAL vs TRUNCATE 三种事务模式并发读对比 =====", LogType.INFO))
+
+        ReadTransactionMode.entries.forEach { txMode ->
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label}: 启动 $threadCount 线程并发读 ---", LogType.INFO))
+            val (walMs, walP50, walP95, walOk) = measureTxMode(walDb, txMode, threadCount, rowsPerThread)
+            val (delMs, delP50, delP95, delOk) = measureTxMode(deleteDb, txMode, threadCount, rowsPerThread)
+
+            val diff = if (delMs > 0) ((delMs - walMs).toFloat() / delMs * 100).toInt() else 0
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL: 总耗时 ${walMs}ms | P50=${walP50}ms | P95=${walP95}ms | 成功 ${walOk}/$threadCount", LogType.SUCCESS))
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】TRUNCATE: 总耗时 ${delMs}ms | P50=${delP50}ms | P95=${delP95}ms | 成功 ${delOk}/$threadCount", LogType.SUCCESS))
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL ${if (diff > 0) "快" else "慢"} ${diff.abs()}%", LogType.INFO))
+        }
+
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 对比完成 =====", LogType.INFO))
+    }
+
+    private fun measureTxMode(
+        db: PerfDatabase,
+        txMode: ReadTransactionMode,
+        threadCount: Int,
+        rowsPerThread: Int,
+    ): TxModeResult {
+        val results = mutableListOf<Long>()
+        val latch = java.util.concurrent.CountDownLatch(threadCount)
+
+        for (i in 0 until threadCount) {
+            val tid = i
+            Thread {
+                val conn = db.readableDatabase
+                when (txMode) {
+                    ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
+                    ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
+                    ReadTransactionMode.READ_ONLY -> conn.beginTransactionReadOnly()
+                }
+                try {
+                    val ms = measureTimeMillis {
+                        conn.rawQuery(
+                            "SELECT * FROM ${Schema.TABLE_NAME} LIMIT $rowsPerThread OFFSET ${tid * rowsPerThread}",
+                            null
+                        ).use { cursor ->
+                            var c = 0
+                            while (cursor.moveToNext()) c++
+                        }
+                    }
+                    conn.setTransactionSuccessful()
+                    synchronized(results) { results.add(ms) }
+                } catch (e: Exception) {
+                    synchronized(results) { results.add(-1L) }
+                } finally {
+                    conn.endTransaction()
+                    latch.countDown()
+                }
+            }.start()
+        }
+
+        latch.await()
+        val validResults = results.filter { it >= 0 }
+        val totalTime = validResults.sum()
+        val p50 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size / 2] else 0L }
+        val p95 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size * 95 / 100] else 0L }
+        return TxModeResult(totalTime, p50, p95, validResults.size)
+    }
+
+    private data class TxModeResult(val total: Long, val p50: Long, val p95: Long, val okCount: Int)
 
     private suspend fun runTimedComparison(
         phase: String,
