@@ -277,7 +277,7 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("事务模式对比", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "对每个事务模式 (独占 / 非独占 / 只读), 分别在 WAL 和 TRUNCATE DB 上执行 10 线程并发读, 输出耗时对比和差异百分比。",
+                    "对每个事务模式 (独占 / 非独占 / 只读), 分别在 WAL 和 TRUNCATE DB 上执行并发读、并发写、读写混合 (8读+2写), 输出耗时对比和差异百分比。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

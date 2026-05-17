@@ -85,6 +85,8 @@ class WalExperiment(private val context: android.content.Context) {
         callback.onLog(ExperimentLog(now(), "WAL对比", "两个 DB 填充完成: WAL=$walCount 行, TRUNCATE=$deleteCount 行", LogType.SUCCESS))
     }
 
+    // ====== 基础实验 (无事务包裹) ======
+
     suspend fun runConcurrentReads(walDb: PerfDatabase, deleteDb: PerfDatabase, threadCount: Int, rowsPerThread: Int, callback: Callback) {
         callback.onLog(ExperimentLog(now(), "并发读", "启动 $threadCount 线程并发读, 每线程 $rowsPerThread 行", LogType.INFO))
         runTimedComparison("并发读", walDb, deleteDb, callback) { db, tid ->
@@ -150,9 +152,13 @@ class WalExperiment(private val context: android.content.Context) {
         }
     }
 
+    // ====== 事务模式 × 日志模式 完整对比 ======
+
     /**
-     * 三种事务模式 × 两种日志模式 完整对比
-     * 对于每种事务模式，分别在 WAL 和 TRUNCATE 上跑并发读，输出对比表格
+     * 三种事务模式 × 三种场景 × 两种日志模式 完整对比
+     *
+     * 场景: 并发读、并发写、读写混合
+     * 对于每种场景，对每种事务模式分别在 WAL 和 TRUNCATE 上跑，输出对比结果
      */
     suspend fun runFullTxModeComparison(
         walDb: PerfDatabase,
@@ -161,23 +167,53 @@ class WalExperiment(private val context: android.content.Context) {
         rowsPerThread: Int,
         callback: Callback,
     ) {
-        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== WAL vs TRUNCATE 三种事务模式并发读对比 =====", LogType.INFO))
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== WAL vs TRUNCATE 完整对比 =====", LogType.INFO))
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "线程数: $threadCount, 每线程行数: $rowsPerThread", LogType.INFO))
 
+        // 场景1: 并发读
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 场景1: 并发读 =====", LogType.INFO))
         ReadTransactionMode.entries.forEach { txMode ->
-            callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label}: 启动 $threadCount 线程并发读 ---", LogType.INFO))
-            val (walMs, walP50, walP95, walOk) = measureTxMode(walDb, txMode, threadCount, rowsPerThread)
-            val (delMs, delP50, delP95, delOk) = measureTxMode(deleteDb, txMode, threadCount, rowsPerThread)
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label} 并发读 ---", LogType.INFO))
+            val (walMs, walP50, walP95, walOk) = measureTxModeRead(walDb, txMode, threadCount, rowsPerThread)
+            val (delMs, delP50, delP95, delOk) = measureTxModeRead(deleteDb, txMode, threadCount, rowsPerThread)
+            logComparison(callback, txMode, walMs, walP50, walP95, walOk, delMs, delP50, delP95, delOk, threadCount)
+        }
 
-            val diff = if (delMs > 0) ((delMs - walMs).toFloat() / delMs * 100).toInt() else 0
-            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL: 总耗时 ${walMs}ms | P50=${walP50}ms | P95=${walP95}ms | 成功 ${walOk}/$threadCount", LogType.SUCCESS))
-            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】TRUNCATE: 总耗时 ${delMs}ms | P50=${delP50}ms | P95=${delP95}ms | 成功 ${delOk}/$threadCount", LogType.SUCCESS))
-            callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL ${if (diff > 0) "快" else "慢"} ${diff.abs()}%", LogType.INFO))
+        // 场景2: 并发写
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 场景2: 并发写 =====", LogType.INFO))
+        ReadTransactionMode.entries.forEach { txMode ->
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label} 并发写 ---", LogType.INFO))
+            val (walMs, walP50, walP95, walOk) = measureTxModeWrite(walDb, txMode, threadCount, rowsPerThread)
+            val (delMs, delP50, delP95, delOk) = measureTxModeWrite(deleteDb, txMode, threadCount, rowsPerThread)
+            logComparison(callback, txMode, walMs, walP50, walP95, walOk, delMs, delP50, delP95, delOk, threadCount)
+        }
+
+        // 场景3: 读写混合
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 场景3: 读写混合 (8读+2写) =====", LogType.INFO))
+        ReadTransactionMode.entries.forEach { txMode ->
+            callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label} 读写混合 ---", LogType.INFO))
+            val (walMs, walP50, walP95, walOk) = measureTxModeMixed(walDb, txMode, threadCount, rowsPerThread)
+            val (delMs, delP50, delP95, delOk) = measureTxModeMixed(deleteDb, txMode, threadCount, rowsPerThread)
+            logComparison(callback, txMode, walMs, walP50, walP95, walOk, delMs, delP50, delP95, delOk, threadCount)
         }
 
         callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 对比完成 =====", LogType.INFO))
     }
 
-    private fun measureTxMode(
+    private fun logComparison(
+        callback: Callback,
+        txMode: ReadTransactionMode,
+        walMs: Long, walP50: Long, walP95: Long, walOk: Int,
+        delMs: Long, delP50: Long, delP95: Long, delOk: Int,
+        threadCount: Int,
+    ) {
+        val diff = if (delMs > 0) ((delMs - walMs).toFloat() / delMs * 100).toInt() else 0
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL: 总耗时 ${walMs}ms | P50=${walP50}ms | P95=${walP95}ms | 成功 ${walOk}/$threadCount", LogType.SUCCESS))
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】TRUNCATE: 总耗时 ${delMs}ms | P50=${delP50}ms | P95=${delP95}ms | 成功 ${delOk}/$threadCount", LogType.SUCCESS))
+        callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL ${if (diff > 0) "快" else "慢"} ${diff.abs()}%", LogType.INFO))
+    }
+
+    private fun measureTxModeRead(
         db: PerfDatabase,
         txMode: ReadTransactionMode,
         threadCount: Int,
@@ -224,6 +260,110 @@ class WalExperiment(private val context: android.content.Context) {
         return TxModeResult(totalTime, p50, p95, validResults.size)
     }
 
+    private fun measureTxModeWrite(
+        db: PerfDatabase,
+        txMode: ReadTransactionMode,
+        threadCount: Int,
+        rowsPerThread: Int,
+    ): TxModeResult {
+        val results = mutableListOf<Long>()
+        val latch = java.util.concurrent.CountDownLatch(threadCount)
+
+        for (i in 0 until threadCount) {
+            val tid = i
+            Thread {
+                val conn = db.writableDatabase
+                when (txMode) {
+                    ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
+                    ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
+                    ReadTransactionMode.READ_ONLY -> conn.beginTransactionReadOnly()
+                }
+                try {
+                    val ms = measureTimeMillis {
+                        for (j in 0 until rowsPerThread) {
+                            val cv = ContentValues()
+                            cv.put("name", "write_${tid}_$j")
+                            cv.put("counter", tid * 1000 + j)
+                            conn.insert(Schema.TABLE_NAME, null, cv)
+                        }
+                    }
+                    conn.setTransactionSuccessful()
+                    synchronized(results) { results.add(ms) }
+                } catch (e: Exception) {
+                    synchronized(results) { results.add(-1L) }
+                } finally {
+                    conn.endTransaction()
+                    latch.countDown()
+                }
+            }.start()
+        }
+
+        latch.await()
+        val validResults = results.filter { it >= 0 }
+        val totalTime = validResults.sum()
+        val p50 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size / 2] else 0L }
+        val p95 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size * 95 / 100] else 0L }
+        return TxModeResult(totalTime, p50, p95, validResults.size)
+    }
+
+    private fun measureTxModeMixed(
+        db: PerfDatabase,
+        txMode: ReadTransactionMode,
+        threadCount: Int,
+        rowsPerThread: Int,
+    ): TxModeResult {
+        val results = mutableListOf<Long>()
+        val readCount = (threadCount * 0.8).toInt()
+        val writeCount = threadCount - readCount
+        val latch = java.util.concurrent.CountDownLatch(threadCount)
+
+        for (i in 0 until threadCount) {
+            val tid = i
+            val isWriter = i >= readCount
+            Thread {
+                val conn = if (isWriter) db.writableDatabase else db.readableDatabase
+                when (txMode) {
+                    ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
+                    ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
+                    ReadTransactionMode.READ_ONLY -> conn.beginTransactionReadOnly()
+                }
+                try {
+                    val ms = measureTimeMillis {
+                        if (!isWriter) {
+                            conn.rawQuery(
+                                "SELECT * FROM ${Schema.TABLE_NAME} LIMIT $rowsPerThread OFFSET ${tid * rowsPerThread}",
+                                null
+                            ).use { cursor ->
+                                var c = 0
+                                while (cursor.moveToNext()) c++
+                            }
+                        } else {
+                            for (j in 0 until 200) {
+                                val cv = ContentValues()
+                                cv.put("score", Random.nextDouble(0.0, 100.0))
+                                conn.update(Schema.TABLE_NAME, cv, "id = ?", arrayOf("${tid * 200 + j + 1}"))
+                            }
+                        }
+                    }
+                    conn.setTransactionSuccessful()
+                    synchronized(results) { results.add(ms) }
+                } catch (e: Exception) {
+                    synchronized(results) { results.add(-1L) }
+                } finally {
+                    conn.endTransaction()
+                    latch.countDown()
+                }
+            }.start()
+        }
+
+        latch.await()
+        val validResults = results.filter { it >= 0 }
+        val totalTime = validResults.sum()
+        val p50 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size / 2] else 0L }
+        val p95 = validResults.sorted().let { if (it.isNotEmpty()) it[it.size * 95 / 100] else 0L }
+        return TxModeResult(totalTime, p50, p95, validResults.size)
+    }
+
     private data class TxModeResult(val total: Long, val p50: Long, val p95: Long, val okCount: Int)
 
     private suspend fun runTimedComparison(
@@ -233,12 +373,11 @@ class WalExperiment(private val context: android.content.Context) {
         callback: Callback,
         block: suspend (PerfDatabase, Int) -> Long,
     ) = supervisorScope {
-        val threadCount = 10
-        val walTimes = List(threadCount) { tid ->
+        val walTimes = List(10) { tid ->
             async(Dispatchers.IO) { block(walDb, tid) }
         }.awaitAll()
 
-        val deleteTimes = List(threadCount) { tid ->
+        val deleteTimes = List(10) { tid ->
             async(Dispatchers.IO) { block(deleteDb, tid) }
         }.awaitAll()
 
