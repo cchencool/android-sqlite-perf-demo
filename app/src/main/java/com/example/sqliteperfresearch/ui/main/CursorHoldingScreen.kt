@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -27,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.sqliteperfresearch.database.CursorExperiment
 import com.example.sqliteperfresearch.database.PerfDatabase
+import com.example.sqliteperfresearch.database.ReadTransactionMode
 import com.example.sqliteperfresearch.model.ExperimentLog
 import com.example.sqliteperfresearch.model.LogType
 import com.example.sqliteperfresearch.ui.main.LogItem
@@ -64,7 +68,12 @@ fun CursorHoldingScreen(modifier: Modifier = Modifier) {
         addLog(ExperimentLog(cursorExp!!.now(), "Cursor持有", "DB 路径: ${db!!.readableDatabase.path}", LogType.INFO))
     }
 
-    Column(modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+    ) {
         Text("Cursor 持有验证", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 4.dp))
         Text(
             "在 Cursor 遍历过程中通过 CountDownLatch 精确控制暂停, 在关键行位置执行 INSERT/UPDATE/DELETE 并提交, 验证已开启的 Cursor 是否能感知到并发写操作 (读一致性)。",
@@ -76,7 +85,7 @@ fun CursorHoldingScreen(modifier: Modifier = Modifier) {
         // Journal mode toggle
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("WAL 模式", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
@@ -92,7 +101,34 @@ fun CursorHoldingScreen(modifier: Modifier = Modifier) {
         }
 
         // Standard tests (no transaction wrapping)
-        Row(modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = {
+                if (isRunning || cursorExp == null) return@Button
+                isRunning = true
+                logs.clear()
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        cursorExp!!.runReadConsistencyTest(if (useWalMode) "WAL" else "TRUNCATE", object : CursorExperiment.Callback {
+                            override fun onLog(log: ExperimentLog) {
+                                scope.launch(Dispatchers.Main) { addLog(log) }
+                            }
+                        })
+                    } catch (e: Exception) {
+                        scope.launch(Dispatchers.Main) {
+                            addLog(ExperimentLog(cursorExp!!.now(), "Cursor持有", "异常: ${e.message}", LogType.ERROR))
+                        }
+                    }
+                    scope.launch(Dispatchers.Main) { isRunning = false }
+                }
+            },
+            enabled = !isRunning,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        ) { Text("普通遍历模式 (无事务)") }
+
+        // Transaction wrapped tests with 3 modes
+        Text("事务包裹读 (选择事务类型):", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
+
+        ReadTransactionMode.entries.forEach { txMode ->
             Button(
                 onClick = {
                     if (isRunning || cursorExp == null) return@Button
@@ -100,58 +136,41 @@ fun CursorHoldingScreen(modifier: Modifier = Modifier) {
                     logs.clear()
                     scope.launch(Dispatchers.IO) {
                         try {
-                            cursorExp!!.runReadConsistencyTest(if (useWalMode) "WAL" else "TRUNCATE", object : CursorExperiment.Callback {
+                            cursorExp!!.runTransactionWrappedTest(txMode, object : CursorExperiment.Callback {
                                 override fun onLog(log: ExperimentLog) {
                                     scope.launch(Dispatchers.Main) { addLog(log) }
                                 }
                             })
                         } catch (e: Exception) {
                             scope.launch(Dispatchers.Main) {
-                                addLog(ExperimentLog(cursorExp!!.now(), "Cursor持有", "异常: ${e.message}", LogType.ERROR))
+                                addLog(ExperimentLog(cursorExp!!.now(), "Cursor持有", "${txMode.label}异常: ${e.message}", LogType.ERROR))
                             }
                         }
                         scope.launch(Dispatchers.Main) { isRunning = false }
                     }
                 },
                 enabled = !isRunning,
-                modifier = Modifier.weight(1f).padding(end = 4.dp),
-            ) { Text("普通遍历模式") }
-            Button(
-                onClick = {
-                    if (isRunning || cursorExp == null) return@Button
-                    isRunning = true
-                    logs.clear()
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            cursorExp!!.runTransactionWrappedTest(object : CursorExperiment.Callback {
-                                override fun onLog(log: ExperimentLog) {
-                                    scope.launch(Dispatchers.Main) { addLog(log) }
-                                }
-                            })
-                        } catch (e: Exception) {
-                            scope.launch(Dispatchers.Main) {
-                                addLog(ExperimentLog(cursorExp!!.now(), "Cursor持有", "事务包裹异常: ${e.message}", LogType.ERROR))
-                            }
-                        }
-                        scope.launch(Dispatchers.Main) { isRunning = false }
-                    }
-                },
-                enabled = !isRunning,
-                modifier = Modifier.weight(1f).padding(start = 4.dp),
-            ) { Text("事务包裹模式") }
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            ) { Text("事务包裹: ${txMode.label} — ${txMode.description}") }
         }
 
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("实验说明:", style = MaterialTheme.typography.labelMedium)
                 Text("• 普通遍历: rawQuery 后不包裹事务, CursorWindow 按需填充, 不保证快照隔离", style = MaterialTheme.typography.bodySmall)
-                Text("• 事务包裹: BEGIN/COMMIT 包裹整个遍历, 锁定快照, 预期 INSERT 不可见, DELETE 不崩溃", style = MaterialTheme.typography.bodySmall)
+                Text("• 独占事务 (beginTransaction): 立即获取 EXCLUSIVE lock, 阻塞其他读写", style = MaterialTheme.typography.bodySmall)
+                Text("• 非独占事务 (beginTransactionNonExclusive): WAL 下获取 SHARED lock, TRUNCATE 下等价于独占", style = MaterialTheme.typography.bodySmall)
+                Text("• 只读事务 (beginTransactionReadOnly): 仅允许读, 任何写操作会抛异常", style = MaterialTheme.typography.bodySmall)
                 Text("• 切换 WAL/TRUNCATE 可对比两种 journal mode 下的差异", style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Text("实验日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(600.dp)
+        ) {
             items(logs.toList()) { log -> LogItem(log) }
         }
     }

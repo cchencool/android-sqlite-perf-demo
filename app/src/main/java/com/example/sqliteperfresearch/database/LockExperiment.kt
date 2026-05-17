@@ -1,20 +1,17 @@
 package com.example.sqliteperfresearch.database
 
-import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.example.sqliteperfresearch.model.ExperimentLog
 import com.example.sqliteperfresearch.model.LogType
 import com.example.sqliteperfresearch.util.LOG_TAG
-import com.example.sqliteperfresearch.util.measureTimed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlin.system.measureTimeMillis
 
-class LockExperiment(private val db: SQLiteDatabase) {
+class LockExperiment(private val dbHelper: PerfDatabase) {
     companion object {
         const val TAG = "$LOG_TAG.Lock"
     }
@@ -30,7 +27,7 @@ class LockExperiment(private val db: SQLiteDatabase) {
         val latch = CountDownLatch(threadCount)
         val results = List(threadCount) { tid ->
             async(Dispatchers.IO) {
-                val reader = SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READONLY)
+                val reader = dbHelper.readableDatabase
                 try {
                     val elapsed = measureTimeMillis {
                         val cursor = reader.rawQuery("SELECT * FROM ${Schema.TABLE_NAME} LIMIT $queryRows", null)
@@ -41,7 +38,6 @@ class LockExperiment(private val db: SQLiteDatabase) {
                     latch.countDown()
                     Pair(tid, elapsed)
                 } finally {
-                    reader.close()
                 }
             }
         }
@@ -62,7 +58,7 @@ class LockExperiment(private val db: SQLiteDatabase) {
 
         val readJobs = List(readThreadCount) { tid ->
             async(Dispatchers.IO) {
-                val reader = SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READONLY)
+                val reader = dbHelper.readableDatabase
                 try {
                     startLatch.countDown()
                     startLatch.await()
@@ -81,14 +77,13 @@ class LockExperiment(private val db: SQLiteDatabase) {
                         )
                     )
                 } finally {
-                    reader.close()
                 }
             }
         }
 
         val writeJobs = List(writeThreadCount) { tid ->
             async(Dispatchers.IO) {
-                val writer = SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READWRITE)
+                val writer = dbHelper.writableDatabase
                 try {
                     writer.beginTransaction()
                     startLatch.countDown()
@@ -105,7 +100,6 @@ class LockExperiment(private val db: SQLiteDatabase) {
                         ExperimentLog(now(), "读写并发", "Write-Thread-$tid 完成: ${elapsed}ms, 释放读锁", LogType.WARNING)
                     )
                 } finally {
-                    writer.close()
                 }
             }
         }
@@ -118,16 +112,15 @@ class LockExperiment(private val db: SQLiteDatabase) {
     suspend fun runLockTimeout(callback: Callback) = supervisorScope {
         callback.onLog(ExperimentLog(now(), "锁超时", "启动长事务并尝试读取, 演示 busy timeout", LogType.INFO))
 
-        val db1 = SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READWRITE)
+        val db1 = dbHelper.writableDatabase
         db1.beginTransaction()
 
         val elapsed = measureTimeMillis {
             val doneLatch = CountDownLatch(1)
             async(Dispatchers.IO) {
                 try {
-                    val db2 = SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READWRITE)
+                    val db2 = dbHelper.readableDatabase
                     db2.rawQuery("SELECT COUNT(*) FROM ${Schema.TABLE_NAME}", null).close()
-                    db2.close()
                     callback.onLog(ExperimentLog(now(), "锁超时", "读操作成功 (未超时)", LogType.SUCCESS))
                 } catch (e: Exception) {
                     callback.onLog(ExperimentLog(now(), "锁超时", "读操作异常: ${e.message}", LogType.ERROR))

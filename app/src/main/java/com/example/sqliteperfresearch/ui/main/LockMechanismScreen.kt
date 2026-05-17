@@ -54,7 +54,7 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
 
     LaunchedEffect(Unit) {
         db = PerfDatabase(context)
-        lockExp = LockExperiment(db!!.readableDatabase)
+        lockExp = LockExperiment(db!!)
     }
 
     Column(modifier) {

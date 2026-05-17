@@ -40,6 +40,8 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
     var deleteDb by remember { mutableStateOf<PerfDatabase?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var isPrepared by remember { mutableStateOf(false) }
+    var walRowCount by remember { mutableStateOf(0L) }
+    var deleteRowCount by remember { mutableStateOf(0L) }
     val logs = remember { mutableStateListOf<ExperimentLog>() }
 
     fun addLog(log: ExperimentLog) {
@@ -77,6 +79,8 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
                         })
                         walDb = wDb
                         deleteDb = dDb
+                        walRowCount = wDb.getRowCount()
+                        deleteRowCount = dDb.getRowCount()
                         scope.launch(Dispatchers.Main) {
                             isPrepared = true
                             isRunning = false
@@ -96,11 +100,44 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
 
         if (!isPrepared) {
             Text(
-                "请先点击「准备两个 DB」创建测试数据库 (需先在数据填充页填入数据)",
+                "请先点击「准备两个 DB」创建测试数据库",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
+        } else {
+            Text(
+                "当前数据量: WAL DB = $walRowCount 行, TRUNCATE DB = $deleteRowCount 行",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+            Button(
+                onClick = {
+                    if (isRunning) return@Button
+                    isRunning = true
+                    addLog(ExperimentLog(walExp!!.now(), "WAL对比", "--- 开始填充 10w 行 ---", LogType.INFO))
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            walExp!!.fillData(walDb!!, deleteDb!!, 100_000, object : WalExperiment.Callback {
+                                override fun onLog(log: ExperimentLog) {
+                                    scope.launch(Dispatchers.Main) { addLog(log) }
+                                }
+                            })
+                            walRowCount = walDb!!.getRowCount()
+                            deleteRowCount = deleteDb!!.getRowCount()
+                            addLog(ExperimentLog(walExp!!.now(), "WAL对比", "WAL DB: $walRowCount 行, TRUNCATE DB: $deleteRowCount 行", LogType.SUCCESS))
+                        } catch (e: Exception) {
+                            scope.launch(Dispatchers.Main) {
+                                addLog(ExperimentLog(walExp!!.now(), "WAL对比", "填充失败: ${e.message}", LogType.ERROR))
+                            }
+                        }
+                        scope.launch(Dispatchers.Main) { isRunning = false }
+                    }
+                },
+                enabled = !isRunning,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            ) { Text("填充 10w 行数据 (两个 DB)") }
         }
 
         Button(

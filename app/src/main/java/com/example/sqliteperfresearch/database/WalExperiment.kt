@@ -41,6 +41,22 @@ class WalExperiment(private val context: android.content.Context) {
         return walDb to deleteDb
     }
 
+    suspend fun fillData(walDb: PerfDatabase, deleteDb: PerfDatabase, count: Int, callback: Callback) {
+        callback.onLog(ExperimentLog(now(), "WAL对比", "开始填充数据: 每个 DB 填充 $count 行", LogType.INFO))
+        val gen = DataGenerator()
+
+        // Fill WAL DB
+        callback.onLog(ExperimentLog(now(), "WAL对比", "填充 WAL DB...", LogType.INFO))
+        var walCount = 0
+        gen.generate(walDb.writableDatabase, count) { inserted -> walCount = inserted }
+        callback.onLog(ExperimentLog(now(), "WAL对比", "WAL DB 填充完成: ${walDb.getRowCount()} 行", LogType.SUCCESS))
+
+        // Fill TRUNCATE DB
+        callback.onLog(ExperimentLog(now(), "WAL对比", "填充 TRUNCATE DB...", LogType.INFO))
+        gen.generate(deleteDb.writableDatabase, count) { }
+        callback.onLog(ExperimentLog(now(), "WAL对比", "TRUNCATE DB 填充完成: ${deleteDb.getRowCount()} 行", LogType.SUCCESS))
+    }
+
     suspend fun runConcurrentReads(walDb: PerfDatabase, deleteDb: PerfDatabase, threadCount: Int, rowsPerThread: Int, callback: Callback) {
         callback.onLog(ExperimentLog(now(), "并发读", "启动 $threadCount 线程并发读, 每线程 $rowsPerThread 行", LogType.INFO))
         runTimedComparison("并发读", walDb, deleteDb, callback) { db, tid ->
