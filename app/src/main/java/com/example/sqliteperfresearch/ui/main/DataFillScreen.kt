@@ -146,8 +146,5 @@ fun DataFillScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun DataFillScreenPreview() {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("DataFillScreen", style = MaterialTheme.typography.headlineMedium)
-        Text("Preview", style = MaterialTheme.typography.bodyMedium)
-    }
+    DataFillScreen(Modifier.fillMaxSize())
 }

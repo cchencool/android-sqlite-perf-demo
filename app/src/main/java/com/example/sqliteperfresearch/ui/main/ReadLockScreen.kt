@@ -184,8 +184,5 @@ fun ReadLockScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun ReadLockScreenPreview() {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("ReadLockScreen", style = MaterialTheme.typography.headlineMedium)
-        Text("Preview", style = MaterialTheme.typography.bodyMedium)
-    }
+    ReadLockScreen(Modifier.fillMaxSize())
 }

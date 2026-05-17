@@ -155,8 +155,5 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun LockMechanismScreenPreview() {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("LockMechanismScreen", style = MaterialTheme.typography.headlineMedium)
-        Text("Preview", style = MaterialTheme.typography.bodyMedium)
-    }
+    LockMechanismScreen(Modifier.fillMaxSize())
 }

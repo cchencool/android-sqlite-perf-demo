@@ -127,8 +127,5 @@ fun ConnectionPoolScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun ConnectionPoolScreenPreview() {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("ConnectionPoolScreen", style = MaterialTheme.typography.headlineMedium)
-        Text("Preview", style = MaterialTheme.typography.bodyMedium)
-    }
+    ConnectionPoolScreen(Modifier.fillMaxSize())
 }

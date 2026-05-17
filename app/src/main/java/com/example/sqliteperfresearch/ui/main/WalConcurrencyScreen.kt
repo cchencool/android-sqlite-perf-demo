@@ -323,8 +323,5 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun WalConcurrencyScreenPreview() {
-    Column {
-        Text("WAL 并发对比", style = MaterialTheme.typography.headlineMedium)
-        Text("对比 WAL 与 TRUNCATE 日志模式下的并发性能")
-    }
+    WalConcurrencyScreen(Modifier.fillMaxSize())
 }

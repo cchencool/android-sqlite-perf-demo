@@ -180,8 +180,5 @@ fun CursorHoldingScreen(modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun CursorHoldingScreenPreview() {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("CursorHoldingScreen", style = MaterialTheme.typography.headlineMedium)
-        Text("Preview", style = MaterialTheme.typography.bodyMedium)
-    }
+    CursorHoldingScreen(Modifier.fillMaxSize())
 }
