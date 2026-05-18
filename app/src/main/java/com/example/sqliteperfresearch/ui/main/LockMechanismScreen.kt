@@ -6,8 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,7 +27,6 @@ import com.example.sqliteperfresearch.database.LockExperiment
 import com.example.sqliteperfresearch.database.PerfDatabase
 import com.example.sqliteperfresearch.model.ExperimentLog
 import com.example.sqliteperfresearch.model.LogType
-import com.example.sqliteperfresearch.ui.main.LogItem
 import com.example.sqliteperfresearch.util.LOG_TAG
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,39 +57,71 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
         lockExp = LockExperiment(db!!)
     }
 
-    Column(modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
         Text("锁机制验证", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 4.dp))
-        Text(
-            "演示 SQLite 并发读写时的锁行为: 共享锁允许多读、排他锁阻塞读、busy timeout 机制",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+            Text(
+                "演示 SQLite 并发读写时的锁行为: 共享锁允许多读、排他锁阻塞读、busy timeout 机制",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 16.dp),
+            )
 
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = {
-                    if (isRunning || lockExp == null) return@Button
-                    isRunning = true
-                    logs.clear()
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            lockExp!!.runConcurrentReads(threadCount = 5, queryRows = 10000, object : LockExperiment.Callback {
-                                override fun onLog(log: ExperimentLog) {
-                                    scope.launch(Dispatchers.Main) { addLog(log) }
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        if (isRunning || lockExp == null) return@Button
+                        isRunning = true
+                        logs.clear()
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                lockExp!!.runConcurrentReads(threadCount = 5, queryRows = 10000, object : LockExperiment.Callback {
+                                    override fun onLog(log: ExperimentLog) {
+                                        scope.launch(Dispatchers.Main) { addLog(log) }
+                                    }
+                                })
+                            } catch (e: Exception) {
+                                scope.launch(Dispatchers.Main) {
+                                    addLog(ExperimentLog(lockExp!!.now(), "并发读", "异常: ${e.message}", LogType.ERROR))
                                 }
-                            })
-                        } catch (e: Exception) {
-                            scope.launch(Dispatchers.Main) {
-                                addLog(ExperimentLog(lockExp!!.now(), "并发读", "异常: ${e.message}", LogType.ERROR))
                             }
+                            scope.launch(Dispatchers.Main) { isRunning = false }
                         }
-                        scope.launch(Dispatchers.Main) { isRunning = false }
-                    }
-                },
-                enabled = !isRunning,
-                modifier = Modifier.weight(1f).padding(end = 4.dp),
-            ) { Text("并发读 ×5") }
+                    },
+                    enabled = !isRunning,
+                    modifier = Modifier.weight(1f).padding(end = 4.dp),
+                ) { Text("并发读 ×5") }
+                Button(
+                    onClick = {
+                        if (isRunning || lockExp == null) return@Button
+                        isRunning = true
+                        logs.clear()
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                lockExp!!.runReadWriteBlocking(
+                                    writeThreadCount = 1, readThreadCount = 3, writeRows = 5000,
+                                    callback = object : LockExperiment.Callback {
+                                        override fun onLog(log: ExperimentLog) {
+                                            scope.launch(Dispatchers.Main) { addLog(log) }
+                                        }
+                                    }
+                                )
+                            } catch (e: Exception) {
+                                scope.launch(Dispatchers.Main) {
+                                    addLog(ExperimentLog(lockExp!!.now(), "读写并发", "异常: ${e.message}", LogType.ERROR))
+                                }
+                            }
+                            scope.launch(Dispatchers.Main) { isRunning = false }
+                        }
+                    },
+                    enabled = !isRunning,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                ) { Text("读写并发") }
+            }
+
             Button(
                 onClick = {
                     if (isRunning || lockExp == null) return@Button
@@ -98,8 +129,7 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
                     logs.clear()
                     scope.launch(Dispatchers.IO) {
                         try {
-                            lockExp!!.runReadWriteBlocking(
-                                writeThreadCount = 1, readThreadCount = 3, writeRows = 5000,
+                            lockExp!!.runLockTimeout(
                                 callback = object : LockExperiment.Callback {
                                     override fun onLog(log: ExperimentLog) {
                                         scope.launch(Dispatchers.Main) { addLog(log) }
@@ -108,47 +138,22 @@ fun LockMechanismScreen(modifier: Modifier = Modifier) {
                             )
                         } catch (e: Exception) {
                             scope.launch(Dispatchers.Main) {
-                                addLog(ExperimentLog(lockExp!!.now(), "读写并发", "异常: ${e.message}", LogType.ERROR))
+                                addLog(ExperimentLog(lockExp!!.now(), "锁超时", "异常: ${e.message}", LogType.ERROR))
                             }
                         }
                         scope.launch(Dispatchers.Main) { isRunning = false }
                     }
                 },
                 enabled = !isRunning,
-                modifier = Modifier.weight(1f).padding(start = 4.dp),
-            ) { Text("读写并发") }
-        }
-
-        Button(
-            onClick = {
-                if (isRunning || lockExp == null) return@Button
-                isRunning = true
-                logs.clear()
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        lockExp!!.runLockTimeout(
-                            callback = object : LockExperiment.Callback {
-                                override fun onLog(log: ExperimentLog) {
-                                    scope.launch(Dispatchers.Main) { addLog(log) }
-                                }
-                            }
-                        )
-                    } catch (e: Exception) {
-                        scope.launch(Dispatchers.Main) {
-                            addLog(ExperimentLog(lockExp!!.now(), "锁超时", "异常: ${e.message}", LogType.ERROR))
-                        }
-                    }
-                    scope.launch(Dispatchers.Main) { isRunning = false }
-                }
-            },
-            enabled = !isRunning,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        ) { Text("锁超时测试") }
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            ) { Text("锁超时测试") }
 
         Text("实验日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(logs.toList()) { log -> LogItem(log) }
-        }
+
+        AutoScrollLogList(
+            logs = logs.toList(),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

@@ -182,6 +182,10 @@ class WalExperiment(private val context: android.content.Context) {
         // 场景2: 并发写
         callback.onLog(ExperimentLog(now(), "事务模式对比", "===== 场景2: 并发写 =====", LogType.INFO))
         ReadTransactionMode.entries.forEach { txMode ->
+            if (txMode == ReadTransactionMode.READ_ONLY) {
+                callback.onLog(ExperimentLog(now(), "事务模式对比", "并发写跳过READ_ONLY模式", LogType.WARNING))
+                return@forEach
+            }
             callback.onLog(ExperimentLog(now(), "事务模式对比", "--- ${txMode.label} 并发写 ---", LogType.INFO))
             val (walMs, walP50, walP95, walOk) = measureTxModeWrite(walDb, txMode, threadCount, rowsPerThread)
             val (delMs, delP50, delP95, delOk) = measureTxModeWrite(deleteDb, txMode, threadCount, rowsPerThread)
@@ -208,6 +212,7 @@ class WalExperiment(private val context: android.content.Context) {
         threadCount: Int,
     ) {
         val diff = if (delMs > 0) ((delMs - walMs).toFloat() / delMs * 100).toInt() else 0
+        val type = if (walOk == threadCount) LogType.SUCCESS else LogType.ERROR
         callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL: 总耗时 ${walMs}ms | P50=${walP50}ms | P95=${walP95}ms | 成功 ${walOk}/$threadCount", LogType.SUCCESS))
         callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】TRUNCATE: 总耗时 ${delMs}ms | P50=${delP50}ms | P95=${delP95}ms | 成功 ${delOk}/$threadCount", LogType.SUCCESS))
         callback.onLog(ExperimentLog(now(), "事务模式对比", "【${txMode.label}】WAL ${if (diff > 0) "快" else "慢"} ${diff.abs()}%", LogType.INFO))
@@ -284,12 +289,12 @@ class WalExperiment(private val context: android.content.Context) {
                             val cv = ContentValues()
                             cv.put("name", "write_${tid}_$j")
                             cv.put("counter", tid * 1000 + j)
-                            conn.insert(Schema.TABLE_NAME, null, cv)
+                            conn.insertOrThrow(Schema.TABLE_NAME, null, cv)
                         }
                     }
                     conn.setTransactionSuccessful()
                     synchronized(results) { results.add(ms) }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     synchronized(results) { results.add(-1L) }
                 } finally {
                     conn.endTransaction()
@@ -322,10 +327,12 @@ class WalExperiment(private val context: android.content.Context) {
             val isWriter = i >= readCount
             Thread {
                 val conn = if (isWriter) db.writableDatabase else db.readableDatabase
-                when (txMode) {
-                    ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
-                    ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
-                    ReadTransactionMode.READ_ONLY -> conn.beginTransactionReadOnly()
+                if (!isWriter) {
+                    when (txMode) {
+                        ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
+                        ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
+                        ReadTransactionMode.READ_ONLY -> conn.beginTransactionReadOnly()
+                    }
                 }
                 try {
                     val ms = measureTimeMillis {
@@ -345,12 +352,16 @@ class WalExperiment(private val context: android.content.Context) {
                             }
                         }
                     }
-                    conn.setTransactionSuccessful()
+                    if (!isWriter) {
+                        conn.setTransactionSuccessful()
+                    }
                     synchronized(results) { results.add(ms) }
                 } catch (e: Exception) {
                     synchronized(results) { results.add(-1L) }
                 } finally {
-                    conn.endTransaction()
+                    if (!isWriter) {
+                        conn.endTransaction()
+                    }
                     latch.countDown()
                 }
             }.start()

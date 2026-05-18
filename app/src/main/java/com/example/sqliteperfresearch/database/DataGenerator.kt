@@ -107,10 +107,10 @@ class DataGenerator {
         cv.put("epoch_created", now.time / 1000)
         cv.put("epoch_updated", now.time / 1000)
         cv.put("epoch_deleted", null as Long?)
-        cv.put("date_birth", DATE_FMT.format(Date(now.time - r.nextLong(1_000_000_000_000L))))
-        cv.put("date_event", DATE_FMT.format(Date(now.time + r.nextLong(9_460_800_000L))))
+        cv.put("date_birth", DATE_FMT.format(Date(now.time - safeNextLong(r, 1_000L))))
+        cv.put("date_event", DATE_FMT.format(Date(now.time + safeNextLong(r, 9_460L))))
         cv.put("time_start", TIME_FMT.format(now))
-        cv.put("time_end", TIME_FMT.format(Date(now.time + r.nextLong(7_200_000L))))
+        cv.put("time_end", TIME_FMT.format(Date(now.time + safeNextLong(r, 7_200L))))
         cv.put("datetime_local", ts)
         cv.put("datetime_utc", ts)
         cv.put("uuid_val", UUID.randomUUID().toString())
@@ -131,4 +131,15 @@ class DataGenerator {
 
     private fun md5(input: ByteArray): ByteArray = MessageDigest.getInstance("MD5").digest(input)
     private fun sha256(input: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(input)
+
+    private fun safeNextLong(r: Random, bound: Long): Long {
+        if (bound <= 0) throw IllegalArgumentException("bound must be positive")
+        var bits: Long
+        var result: Long
+        do {
+            bits = r.nextLong() ushr 1
+            result = bits % bound
+        } while (bits - result + (bound - 1) < 0)
+        return result
+    }
 }
