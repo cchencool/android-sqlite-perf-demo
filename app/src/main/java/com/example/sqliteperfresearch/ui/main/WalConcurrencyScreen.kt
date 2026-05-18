@@ -266,6 +266,33 @@ fun WalConcurrencyScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
             ) { Text("实验3: 并发写 (10 线程 × 200行)") }
 
+            Text("写阻塞读:", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
+
+            Button(
+                onClick = {
+                    if (isRunning || !isPrepared) return@Button
+                    isRunning = true
+                    addLog(ExperimentLog(walExp!!.now(), "写阻塞读", "--- 开始写阻塞读测试 ---", LogType.INFO))
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            walExp!!.runWriteBlocksReadTest(walDb!!, deleteDb!!, 5000,
+                                callback = object : WalExperiment.Callback {
+                                    override fun onLog(log: ExperimentLog) {
+                                        scope.launch(Dispatchers.Main) { addLog(log) }
+                                    }
+                                })
+                        } catch (e: Exception) {
+                            scope.launch(Dispatchers.Main) {
+                                addLog(ExperimentLog(walExp!!.now(), "写阻塞读", "异常: ${e.message}", LogType.ERROR))
+                            }
+                        }
+                        scope.launch(Dispatchers.Main) { isRunning = false }
+                    }
+                },
+                enabled = !isRunning && isPrepared,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            ) { Text("实验4: 写阻塞读 (3种事务模式 × 2种日志模式)") }
+
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text("事务模式对比", style = MaterialTheme.typography.titleSmall)

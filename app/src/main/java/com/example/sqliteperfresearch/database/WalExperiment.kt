@@ -108,14 +108,14 @@ class WalExperiment(private val context: android.content.Context) {
             measureTimeMillis {
                 if (tid < 8) {
                     db.readableDatabase.rawQuery(
-                        "SELECT * FROM ${Schema.TABLE_NAME} LIMIT 5000 OFFSET ${tid * 5000}",
+                        "SELECT * FROM ${Schema.TABLE_NAME} LIMIT 50000 OFFSET ${tid * 5000}",
                         null
                     ).close()
                 } else {
                     val writer = db.writableDatabase
                     writer.beginTransaction()
                     try {
-                        for (i in 0 until 200) {
+                        for (i in 0 until 2000) {
                             val cv = ContentValues()
                             cv.put("score", Random.nextDouble(0.0, 100.0))
                             writer.update(Schema.TABLE_NAME, cv, "id = ?", arrayOf("${tid * 200 + i + 1}"))
@@ -376,6 +376,110 @@ class WalExperiment(private val context: android.content.Context) {
     }
 
     private data class TxModeResult(val total: Long, val p50: Long, val p95: Long, val okCount: Int)
+
+    suspend fun runWriteBlocksReadTest(
+        walDb: PerfDatabase,
+        deleteDb: PerfDatabase,
+        insertRows: Int = 5000,
+        callback: Callback,
+    ) {
+        val phase = "写阻塞读"
+        callback.onLog(ExperimentLog(now(), phase, "===== 写阻塞读测试 =====", LogType.INFO))
+        callback.onLog(ExperimentLog(now(), phase, "场景: 一个线程用指定事务模式批量插入 $insertRows 行, 同时另一个线程查询, 观察查询是否被阻塞及耗时", LogType.INFO))
+
+        ReadTransactionMode.entries.forEach { txMode ->
+            callback.onLog(ExperimentLog(now(), phase, "--- ${txMode.label} ---", LogType.INFO))
+            val (walTotal, walReadMs, walBlocked) = measureWriteBlocksRead(walDb, txMode, insertRows)
+            val (delTotal, delReadMs, delBlocked) = measureWriteBlocksRead(deleteDb, txMode, insertRows)
+            val walStatus = if (walBlocked) "被阻塞" else "未阻塞"
+            val delStatus = if (delBlocked) "被阻塞" else "未阻塞"
+            callback.onLog(ExperimentLog(now(), phase, "【${txMode.label}】WAL: 写入总耗时 ${walTotal}ms | 查询耗时 ${walReadMs}ms | $walStatus", LogType.SUCCESS))
+            callback.onLog(ExperimentLog(now(), phase, "【${txMode.label}】TRUNCATE: 写入总耗时 ${delTotal}ms | 查询耗时 ${delReadMs}ms | $delStatus", LogType.SUCCESS))
+            if (walReadMs > 0 && delReadMs > 0) {
+                val diff = ((delReadMs - walReadMs).toFloat() / delReadMs * 100).toInt()
+                callback.onLog(ExperimentLog(now(), phase, "【${txMode.label}】WAL 查询 ${if (diff > 0) "快" else "慢"} ${diff.abs()}%", LogType.INFO))
+            }
+        }
+
+        callback.onLog(ExperimentLog(now(), phase, "===== 测试完成 =====", LogType.INFO))
+    }
+
+    private fun measureWriteBlocksRead(
+        db: PerfDatabase,
+        txMode: ReadTransactionMode,
+        insertRows: Int,
+    ): WriteBlocksReadResult {
+        val writerLatch = java.util.concurrent.CountDownLatch(1)
+        val readerReadyLatch = java.util.concurrent.CountDownLatch(1)
+        val readerDoneLatch = java.util.concurrent.CountDownLatch(1)
+
+        var writeTotalMs = 0L
+        var readMs = 0L
+        var readBlocked = false
+
+        val writerThread = Thread {
+            val conn = db.writableDatabase
+            when (txMode) {
+                ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
+                ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
+                ReadTransactionMode.READ_ONLY -> {
+                    try {
+                        conn.beginTransactionReadOnly()
+                    } catch (e: Exception) {
+                        writerLatch.countDown()
+                        return@Thread
+                    }
+                }
+            }
+            try {
+                writerLatch.countDown()
+                val ms = measureTimeMillis {
+                    for (i in 0 until insertRows) {
+                        val cv = ContentValues()
+                        cv.put("name", "block_read_$i")
+                        cv.put("counter", i)
+                        conn.insertOrThrow(Schema.TABLE_NAME, null, cv)
+                    }
+                }
+                writeTotalMs = ms
+                conn.setTransactionSuccessful()
+            } catch (_: Throwable) {
+            } finally {
+                conn.endTransaction()
+            }
+        }
+
+        val readerThread = Thread {
+            try {
+                readerReadyLatch.countDown()
+                writerLatch.await()
+                val ms = measureTimeMillis {
+                    db.readableDatabase.rawQuery(
+                        "SELECT * FROM ${Schema.TABLE_NAME} LIMIT 1000",
+                        null
+                    ).use { cursor ->
+                        var c = 0
+                        while (cursor.moveToNext()) c++
+                    }
+                }
+                readMs = ms
+                readBlocked = ms > (writeTotalMs * 3 / 4)
+            } catch (_: Throwable) {
+            } finally {
+                readerDoneLatch.countDown()
+            }
+        }
+
+        writerThread.start()
+        readerReadyLatch.await()
+        readerThread.start()
+        readerDoneLatch.await()
+        writerThread.join()
+
+        return WriteBlocksReadResult(writeTotalMs, readMs, readBlocked)
+    }
+
+    private data class WriteBlocksReadResult(val writeTotalMs: Long, val readMs: Long, val blocked: Boolean)
 
     private suspend fun runTimedComparison(
         phase: String,
