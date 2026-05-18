@@ -1,10 +1,10 @@
 package com.example.sqliteperfresearch.ui.main
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -16,20 +16,20 @@ fun AutoScrollLogList(
     logs: List<ExperimentLog>,
     modifier: Modifier = Modifier,
 ) {
-    val listState = rememberLazyListState()
+    val scrollState = rememberScrollState()
 
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
-            listState.animateScrollToItem(logs.size - 1)
+            scrollState.animateScrollTo(scrollState.maxValue)
         }
     }
 
-    LazyColumn(
-        state = listState,
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 300.dp),
+            .heightIn(min = 300.dp)
+            .verticalScroll(scrollState),
     ) {
-        items(logs) { log -> LogItem(log) }
+        logs.forEach { log -> LogItem(log) }
     }
 }
