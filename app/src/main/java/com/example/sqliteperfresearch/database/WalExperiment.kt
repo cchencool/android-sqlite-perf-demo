@@ -387,7 +387,7 @@ class WalExperiment(private val context: android.content.Context) {
         callback.onLog(ExperimentLog(now(), phase, "===== 写阻塞读测试 =====", LogType.INFO))
         callback.onLog(ExperimentLog(now(), phase, "场景: 一个线程用指定事务模式批量插入 $insertRows 行, 同时另一个线程查询, 观察查询是否被阻塞及耗时", LogType.INFO))
 
-        ReadTransactionMode.entries.forEach { txMode ->
+        ReadTransactionMode.entries.filter { it != ReadTransactionMode.READ_ONLY }.forEach { txMode ->
             callback.onLog(ExperimentLog(now(), phase, "--- ${txMode.label} ---", LogType.INFO))
             val (walTotal, walReadMs, walBlocked) = measureWriteBlocksRead(walDb, txMode, insertRows)
             val (delTotal, delReadMs, delBlocked) = measureWriteBlocksRead(deleteDb, txMode, insertRows)
@@ -409,30 +409,19 @@ class WalExperiment(private val context: android.content.Context) {
         txMode: ReadTransactionMode,
         insertRows: Int,
     ): WriteBlocksReadResult {
-        val writerLatch = java.util.concurrent.CountDownLatch(1)
-        val readerReadyLatch = java.util.concurrent.CountDownLatch(1)
-        val readerDoneLatch = java.util.concurrent.CountDownLatch(1)
-
         var writeTotalMs = 0L
         var readMs = 0L
-        var readBlocked = false
+        var writerStarted = false
 
         val writerThread = Thread {
             val conn = db.writableDatabase
             when (txMode) {
                 ReadTransactionMode.EXCLUSIVE -> conn.beginTransaction()
                 ReadTransactionMode.NON_EXCLUSIVE -> conn.beginTransactionNonExclusive()
-                ReadTransactionMode.READ_ONLY -> {
-                    try {
-                        conn.beginTransactionReadOnly()
-                    } catch (e: Exception) {
-                        writerLatch.countDown()
-                        return@Thread
-                    }
-                }
+                ReadTransactionMode.READ_ONLY -> return@Thread
             }
             try {
-                writerLatch.countDown()
+                writerStarted = true
                 val ms = measureTimeMillis {
                     for (i in 0 until insertRows) {
                         val cv = ContentValues()
@@ -450,9 +439,8 @@ class WalExperiment(private val context: android.content.Context) {
         }
 
         val readerThread = Thread {
+            while (!writerStarted) Thread.sleep(1)
             try {
-                readerReadyLatch.countDown()
-                writerLatch.await()
                 val ms = measureTimeMillis {
                     db.readableDatabase.rawQuery(
                         "SELECT * FROM ${Schema.TABLE_NAME} LIMIT 1000",
@@ -463,19 +451,16 @@ class WalExperiment(private val context: android.content.Context) {
                     }
                 }
                 readMs = ms
-                readBlocked = ms > (writeTotalMs * 3 / 4)
             } catch (_: Throwable) {
-            } finally {
-                readerDoneLatch.countDown()
             }
         }
 
         writerThread.start()
-        readerReadyLatch.await()
         readerThread.start()
-        readerDoneLatch.await()
         writerThread.join()
+        readerThread.join()
 
+        val readBlocked = readMs > (writeTotalMs * 3 / 4)
         return WriteBlocksReadResult(writeTotalMs, readMs, readBlocked)
     }
 
