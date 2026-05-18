@@ -49,6 +49,10 @@ class WalExperiment(private val context: android.content.Context) {
         }
         val walDb = PerfDatabase(context, "test_wal.db")
         val deleteDb = PerfDatabase(context, "test_delete.db")
+
+        walDb.setWalMode(true)
+        deleteDb.setWalMode(false)
+
         val walMode = walDb.getJournalMode()
         val deleteMode = deleteDb.getJournalMode()
         val walCount = walDb.getRowCount()
@@ -389,8 +393,8 @@ class WalExperiment(private val context: android.content.Context) {
 
         ReadTransactionMode.entries.filter { it != ReadTransactionMode.READ_ONLY }.forEach { txMode ->
             callback.onLog(ExperimentLog(now(), phase, "--- ${txMode.label} ---", LogType.INFO))
-            val (walTotal, walReadMs, walBlocked) = measureWriteBlocksRead(walDb, txMode, insertRows)
-            val (delTotal, delReadMs, delBlocked) = measureWriteBlocksRead(deleteDb, txMode, insertRows)
+            val (walTotal, walReadMs, walBlocked) = measureWriteBlocksRead(walDb, txMode, insertRows, callback)
+            val (delTotal, delReadMs, delBlocked) = measureWriteBlocksRead(deleteDb, txMode, insertRows, callback)
             val walStatus = if (walBlocked) "被阻塞" else "未阻塞"
             val delStatus = if (delBlocked) "被阻塞" else "未阻塞"
             callback.onLog(ExperimentLog(now(), phase, "【${txMode.label}】WAL: 写入总耗时 ${walTotal}ms | 查询耗时 ${walReadMs}ms | $walStatus", LogType.SUCCESS))
@@ -408,7 +412,9 @@ class WalExperiment(private val context: android.content.Context) {
         db: PerfDatabase,
         txMode: ReadTransactionMode,
         insertRows: Int,
+        callback: Callback,
     ): WriteBlocksReadResult {
+        val dbLabel = db.getJournalMode()
         var writeTotalMs = 0L
         var readMs = 0L
         var writerStarted = false
@@ -421,6 +427,7 @@ class WalExperiment(private val context: android.content.Context) {
                 ReadTransactionMode.READ_ONLY -> return@Thread
             }
             try {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 写入开始"))
                 writerStarted = true
                 val ms = measureTimeMillis {
                     for (i in 0 until insertRows) {
@@ -431,8 +438,11 @@ class WalExperiment(private val context: android.content.Context) {
                     }
                 }
                 writeTotalMs = ms
+                Thread.sleep(3*1000)
                 conn.setTransactionSuccessful()
-            } catch (_: Throwable) {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 写入完成, 耗时 ${ms}ms"))
+            } catch (e: Throwable) {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 写入异常: ${e.message}", LogType.ERROR))
             } finally {
                 conn.endTransaction()
             }
@@ -441,6 +451,7 @@ class WalExperiment(private val context: android.content.Context) {
         val readerThread = Thread {
             while (!writerStarted) Thread.sleep(1)
             try {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 读取开始"))
                 val ms = measureTimeMillis {
                     db.readableDatabase.rawQuery(
                         "SELECT * FROM ${Schema.TABLE_NAME} LIMIT 1000",
@@ -451,7 +462,9 @@ class WalExperiment(private val context: android.content.Context) {
                     }
                 }
                 readMs = ms
-            } catch (_: Throwable) {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 读取完成, 耗时 ${ms}ms"))
+            } catch (e: Throwable) {
+                callback.onLog(ExperimentLog(now(), "写阻塞读", "[$dbLabel/${txMode.label}] 读取异常: ${e.message}", LogType.ERROR))
             }
         }
 
