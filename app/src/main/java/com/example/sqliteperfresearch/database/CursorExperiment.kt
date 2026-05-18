@@ -84,6 +84,7 @@ class CursorExperiment(private val dbHelper: PerfDatabase) {
         return try {
             cursor.getLong(0) to cursor.getString(1)
         } catch (e: IllegalStateException) {
+            Log.e(TAG, "safeReadRow exception.", e)
             null
         }
     }
