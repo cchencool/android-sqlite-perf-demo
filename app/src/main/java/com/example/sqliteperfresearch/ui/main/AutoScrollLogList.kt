@@ -27,7 +27,7 @@ fun AutoScrollLogList(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 300.dp)
+            .heightIn(min = 300.dp, max = 400.dp)
             .verticalScroll(scrollState),
     ) {
         logs.forEach { log -> LogItem(log) }
