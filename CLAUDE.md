@@ -15,12 +15,20 @@ Android SQLite 性能预研 Demo。基于 Jetpack Compose，目标 SDK 36 (Andro
 # 安装到设备/模拟器
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# 运行测试
+# 运行所有测试
 ./gradlew test
+
+# 运行单个测试类
+./gradlew test --tests "com.example.sqliteperfresearch.ExampleUnitTest"
+
+# 查看实验日志（logcat 过滤）
+adb logcat -s SQLitePerf.*
 
 # 清理构建
 ./gradlew clean
 ```
+
+> **注意**：需要 Java 17 工具链（`jvmToolchain(17)`）。依赖版本通过 Gradle Version Catalog（`gradle/libs.versions.toml`）管理。
 
 ## 技术栈
 
@@ -31,6 +39,21 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **协程**: kotlinx-coroutines 使用 `supervisorScope`、`async`、`Dispatchers.IO/Main`
 
 ## 架构
+
+### 模型与工具 (`model/`, `util/`)
+
+| 文件 | 职责 |
+|------|------|
+| `model/ExperimentLog.kt` | 日志数据类，包含时间戳、级别、消息，写入 UI `MutableStateList` 和 logcat |
+| `util/Timing.kt` | 耗时测量工具，计算 P50/P95 延迟 |
+| `util/LogTag.kt` | 统一 logcat tag 定义（`SQLitePerf.*` 前缀） |
+
+### UI 公共组件 (`ui/main/`)
+
+| 文件 | 职责 |
+|------|------|
+| `AutoScrollLogList.kt` | 自动滚动的日志列表容器，跟随最新日志滚动 |
+| `LogItem.kt` | 单条日志 UI 组件，显示时间戳、级别、消息 |
 
 ### 导航
 
@@ -71,3 +94,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **WAL 模式通过 `enableWriteAheadLogging()` 设置** — 不使用 `PRAGMA journal_mode=WAL`（在 Android 连接池中不会持久化）
 - **日志输出**：`addLog()` 同时写入 UI `LazyColumn` 和 logcat（`SQLitePerf.*` tag）
 - **Preview**：每个页面都有 `@Preview`，调用实际的页面 Composable 并传入 `Modifier.fillMaxSize()`
+
+## 关键研究发现
+
+- `SQLiteDatabase.openDatabase()` 每次创建独立的连接池（Max connections: 1），互不竞争。真正的连接池由 `SQLiteOpenHelper` 管理，`readableDatabase` / `writableDatabase` 共享同一个池。
+- 不使用事务包裹的 `rawQuery` 不保证快照隔离 — CursorWindow 分批次填充，后续批次能看到已提交的 INSERT，DELETE 会导致 CursorWindow 崩溃。
+- 使用 `BEGIN / COMMIT` 包裹整个 Cursor 遍历可以锁定快照，INSERT 不可见，DELETE 不会导致崩溃。
+- WAL 模式下读写使用不同连接，reader 不会阻塞 writer。
